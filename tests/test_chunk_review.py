@@ -100,9 +100,14 @@ def test_chunk_review_service_persists_conversation(tmp_path: Path) -> None:
         suggestions = suggestion_repository.list_for_conversation(
             result.conversation_id
         )
+        chat_candidates = CandidateRepository(connection).list_candidates_for_chunk(
+            chunk_id
+        )
 
     assert len(suggestions) == 1
     assert suggestions[0].study_chunk_id == chunk_id
     assert suggestions[0].candidate_type == "sentence"
     assert suggestions[0].simplified == "我会尽量地把每一个字都说出来。"
     assert suggestions[0].status == "suggested"
+    assert len(chat_candidates) == 2
+    assert chat_candidates[1].candidate_type == "sentence"

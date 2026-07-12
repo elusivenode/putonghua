@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from textwrap import wrap
 
 from rich.console import Console
 from rich.panel import Panel
@@ -15,17 +16,24 @@ from putonghua.models.tui import (
     TuiDashboardView,
     TuiPublishTargetView,
     TuiReviewContextView,
-    TuiReviewSuggestionView,
 )
+from putonghua.models.tutorial import TutorialSessionView, TutorialStepView
 from putonghua.services.tui_session import TuiSessionService
 
 InputFunc = Callable[[str], str]
+FOCUS_WRAP_WIDTH = 88
 
 HELP_TEXT = (
     "Shortcuts: [bold]h[/] help, [bold]r[/] refresh, [bold]p N[/] project, "
     "[bold]s N[/] source, [bold]c N[/] chunk, [bold]n[/] next pending chunk, "
+    "[bold]done[/] mark chunk completed, "
     "[bold]extract[/] extract candidates, [bold]chat PROMPT[/] review prompt, "
-    "[bold]promote [N][/] promote suggestion, [bold]publish [N][/] publish candidate, "
+    "[bold]promote [N][/] promote candidate, [bold]publish [N][/] publish candidate, "
+    "[bold]tutorial[/] start fresh tutorial, "
+    "[bold]tutorial resume[/] resume tutorial, "
+    "[bold]tutorial next[/] advance guided intro, "
+    "[bold]tutorial status[/] show progress, "
+    "[bold]tutorial reset[/] clear tutorial state, "
     "[bold]q[/] quit"
 )
 
@@ -110,12 +118,26 @@ def _handle_command(
         state.selected_chunk_id = next_chunk.id
         console.print(f"Selected chunk {next_chunk.chunk_index + 1}.")
         return False
+    if normalized in {"done", "complete"}:
+        return _complete_selected_chunk(
+            dashboard=dashboard,
+            state=state,
+            service=service,
+            console=console,
+        )
     if normalized in {"p", "project"}:
         return _select_project(arguments, dashboard, state, console)
     if normalized in {"s", "source"}:
         return _select_source(arguments, dashboard, state, console)
     if normalized in {"c", "chunk"}:
         return _select_chunk(arguments, dashboard, state, console)
+    if normalized == "tutorial":
+        return _handle_tutorial_command(
+            arguments=arguments,
+            state=state,
+            service=service,
+            console=console,
+        )
     if normalized == "extract":
         return _extract_selected_chunk(
             dashboard=dashboard,
@@ -217,6 +239,86 @@ def _select_chunk(
     return False
 
 
+def _handle_tutorial_command(
+    *,
+    arguments: list[str],
+    state: TuiSessionState,
+    service: TuiSessionService,
+    console: Console,
+) -> bool:
+    """Start, inspect, or reset the tutorial session."""
+
+    action = arguments[0].lower() if arguments else "start"
+    if action == "start":
+        try:
+            session = service.start_tutorial()
+        except Exception as exc:
+            console.print(f"Tutorial start failed: {exc}")
+            return False
+        state.selected_project_id = session.project_id
+        state.selected_source_id = session.source_id
+        state.selected_chunk_id = session.study_chunk_id
+        console.print(
+            "Tutorial started from step 1. "
+            "Follow the Tutorial panel for the next operator action."
+        )
+        return False
+    if action == "resume":
+        try:
+            session = service.resume_tutorial()
+        except Exception as exc:
+            console.print(f"Tutorial resume failed: {exc}")
+            return False
+        state.selected_project_id = session.project_id
+        state.selected_source_id = session.source_id
+        state.selected_chunk_id = session.study_chunk_id
+        console.print("Tutorial resumed.")
+        return False
+    if action == "status":
+        session = service.get_tutorial_session()
+        if session is None:
+            console.print("No active tutorial session.")
+            return False
+        console.print(_render_tutorial_panel(session))
+        return False
+    if action == "next":
+        try:
+            session = service.advance_tutorial()
+        except Exception as exc:
+            console.print(f"Tutorial advance failed: {exc}")
+            return False
+        state.selected_project_id = session.project_id
+        state.selected_source_id = session.source_id
+        state.selected_chunk_id = session.study_chunk_id
+        console.print("Tutorial advanced.")
+        return False
+    if action == "reset":
+        try:
+            reset = service.reset_tutorial()
+        except Exception as exc:
+            console.print(f"Tutorial reset failed: {exc}")
+            return False
+        state.selected_project_id = None
+        state.selected_source_id = None
+        state.selected_chunk_id = None
+        if reset:
+            console.print(
+                "Tutorial state reset. Type `tutorial` to start again from step 1."
+            )
+        else:
+            console.print(
+                "No active tutorial session was available to reset. "
+                "Type `tutorial` to start from step 1."
+            )
+        return False
+
+    console.print(
+        "Tutorial usage: tutorial, tutorial resume, tutorial next, "
+        "tutorial status, tutorial reset"
+    )
+    return False
+
+
 def _extract_selected_chunk(
     *,
     dashboard: TuiDashboardView,
@@ -239,6 +341,50 @@ def _extract_selected_chunk(
     console.print(
         "Extracted "
         f"{result.candidate_count} candidate cards for chunk {result.chunk_id}"
+    )
+    return False
+
+
+def _complete_selected_chunk(
+    *,
+    dashboard: TuiDashboardView,
+    state: TuiSessionState,
+    service: TuiSessionService,
+    console: Console,
+) -> bool:
+    """Mark the selected chunk completed and move on when possible."""
+
+    selected_chunk = _get_selected_chunk(dashboard)
+    if selected_chunk is None:
+        console.print("Select a chunk before marking it completed.")
+        return False
+
+    try:
+        service.complete_chunk(selected_chunk.id)
+    except Exception as exc:
+        console.print(f"Chunk completion failed: {exc}")
+        return False
+
+    next_chunk = next(
+        (
+            chunk
+            for chunk in dashboard.chunks
+            if chunk.id != selected_chunk.id and chunk.status == "pending"
+        ),
+        None,
+    )
+    if next_chunk is None:
+        state.selected_chunk_id = None
+        console.print(
+            f"Marked chunk {selected_chunk.chunk_index + 1} completed. "
+            "No other pending chunk is currently available in this source."
+        )
+        return False
+
+    state.selected_chunk_id = next_chunk.id
+    console.print(
+        f"Marked chunk {selected_chunk.chunk_index + 1} completed. "
+        f"Selected chunk {next_chunk.chunk_index + 1}."
     )
     return False
 
@@ -275,7 +421,7 @@ def _chat_for_selected_chunk(
     console.print("Assistant:")
     console.print(result.assistant_text)
     if result.suggested_cards:
-        console.print(f"Suggested cards: {len(result.suggested_cards)}")
+        console.print(f"Added candidates: {len(result.suggested_cards)}")
     return False
 
 
@@ -286,30 +432,28 @@ def _promote_selected_suggestion(
     service: TuiSessionService,
     console: Console,
 ) -> bool:
-    """Promote one visible suggestion for the selected chunk."""
+    """Promote one candidate into the publish queue."""
 
-    review_context = dashboard.review_context
-    if review_context is None or not review_context.suggestions:
-        console.print("No review suggestions are available for the selected chunk.")
+    if not dashboard.candidates:
+        console.print("No candidates are available for the selected chunk.")
         return False
 
-    suggestion = _resolve_selected_suggestion(arguments, review_context, console)
-    if suggestion is None:
+    candidate = _resolve_promotable_candidate(arguments, dashboard.candidates, console)
+    if candidate is None:
         return False
 
     try:
-        result = service.promote_suggestion(suggestion.id)
+        result = service.promote_candidate(candidate.id)
     except Exception as exc:
-        console.print(f"Suggestion promotion failed: {exc}")
+        console.print(f"Candidate promotion failed: {exc}")
         return False
 
-    console.print(f"Suggestion ID: {result.suggestion_id}")
     console.print(f"Candidate ID: {result.candidate_id}")
     console.print(f"Status: {result.status}")
     if result.created:
-        console.print("Created new candidate")
+        console.print("Candidate added to the publish queue")
     else:
-        console.print("Candidate already existed")
+        console.print("Candidate was already ready to publish")
     return False
 
 
@@ -392,28 +536,6 @@ def _publish_selected_candidate(
     return False
 
 
-def _resolve_selected_suggestion(
-    arguments: list[str],
-    review_context: TuiReviewContextView,
-    console: Console,
-) -> TuiReviewSuggestionView | None:
-    """Resolve the visible suggestion to promote."""
-
-    if not arguments:
-        for suggestion in review_context.suggestions:
-            if suggestion.status != "promoted":
-                return suggestion
-        return review_context.suggestions[0]
-
-    index = _parse_index(arguments, console, "suggestion")
-    if index is None:
-        return None
-    if index < 0 or index >= len(review_context.suggestions):
-        console.print("Suggestion selection is out of range.")
-        return None
-    return review_context.suggestions[index]
-
-
 def _resolve_selected_candidate(
     arguments: list[str],
     candidates: list[TuiCandidateView],
@@ -424,6 +546,28 @@ def _resolve_selected_candidate(
     if not arguments:
         for candidate in candidates:
             if candidate.status == "promoted":
+                return candidate
+        return candidates[0]
+
+    index = _parse_index(arguments, console, "candidate")
+    if index is None:
+        return None
+    if index < 0 or index >= len(candidates):
+        console.print("Candidate selection is out of range.")
+        return None
+    return candidates[index]
+
+
+def _resolve_promotable_candidate(
+    arguments: list[str],
+    candidates: list[TuiCandidateView],
+    console: Console,
+) -> TuiCandidateView | None:
+    """Resolve the visible extracted candidate to promote."""
+
+    if not arguments:
+        for candidate in candidates:
+            if candidate.status not in {"promoted", "published"}:
                 return candidate
         return candidates[0]
 
@@ -463,10 +607,96 @@ def _render_dashboard(console: Console, dashboard: TuiDashboardView) -> None:
 
     console.print()
     console.print(Panel.fit(HELP_TEXT, title="Help"))
+    console.print(_render_tutorial_panel(dashboard.tutorial))
     console.print(_render_projects_table(dashboard))
     console.print(_render_sources_table(dashboard))
     console.print(_render_chunks_table(dashboard))
     console.print(_render_focus_panel(dashboard))
+
+
+def _render_tutorial_panel(tutorial: TutorialSessionView | None) -> Panel:
+    """Render the current tutorial checklist or idle guidance."""
+
+    if tutorial is None:
+        lines = [
+            "Status: inactive",
+            "Step: not started",
+            "Command: tutorial",
+            "Goal: Start the guided walkthrough",
+            "",
+            "Do this:",
+            "1. Type `tutorial` to start a fresh walkthrough from step 1.",
+            "2. Type `tutorial resume` only if you want to continue an earlier run.",
+            "3. Follow the Tutorial panel one command at a time after it starts.",
+            "",
+            "Choice: Use `tutorial` for a clean restart. "
+            "Use `tutorial resume` only when you intentionally want previous progress.",
+            "Why: The tutorial is meant to teach the workflow in order, "
+            "so it needs an explicit entry point.",
+            "State: no active tutorial session",
+        ]
+        return Panel("\n".join(lines), title="Tutorial")
+
+    current_step = _resolve_current_tutorial_step(tutorial)
+    current_step_title = (
+        current_step.title if current_step is not None else tutorial.current_step
+    )
+    lines = [
+        f"Status: {tutorial.status}",
+        f"Step: {_tutorial_step_label(tutorial, current_step)}",
+    ]
+    if current_step is not None:
+        lines.append(f"Command: {current_step.command}")
+        lines.append(f"Goal: {current_step_title}")
+        lines.extend(
+            [
+                "",
+                "Do this:",
+            ]
+        )
+        for index, action in enumerate(current_step.actions, start=1):
+            lines.append(f"{index}. {action}")
+        lines.extend(
+            [
+                "",
+                f"Check: {current_step.success_condition}",
+                f"Choice: {current_step.choice_hint}",
+                f"Why: {current_step.why}",
+                f"State: {current_step.detail}",
+            ]
+        )
+    lines.append("")
+    lines.append("Progress:")
+    for step in tutorial.steps:
+        marker = "[x]" if step.completed else "[ ]"
+        prefix = (
+            "->" if current_step is not None and step.key == current_step.key else "  "
+        )
+        lines.append(f"{prefix} {marker} {step.title}")
+    return Panel("\n".join(lines), title="Tutorial")
+
+
+def _tutorial_step_label(
+    tutorial: TutorialSessionView,
+    current_step: TutorialStepView | None,
+) -> str:
+    """Return the current tutorial step label."""
+
+    if current_step is None:
+        return "completed"
+    current_index = tutorial.steps.index(current_step) + 1
+    return f"{current_index}/{len(tutorial.steps)}"
+
+
+def _resolve_current_tutorial_step(
+    tutorial: TutorialSessionView,
+) -> TutorialStepView | None:
+    """Return the first incomplete tutorial step, or the final step if complete."""
+
+    for step in tutorial.steps:
+        if not step.completed:
+            return step
+    return tutorial.steps[-1] if tutorial.steps else None
 
 
 def _render_projects_table(dashboard: TuiDashboardView) -> Table:
@@ -549,10 +779,6 @@ def _render_focus_panel(dashboard: TuiDashboardView) -> Panel:
             title="Focus",
         )
 
-    excerpt = selected_chunk.text.strip()
-    if len(excerpt) > 220:
-        excerpt = excerpt[:217] + "..."
-
     lines = [
         f"Chunk {selected_chunk.chunk_index + 1}",
         f"Status: {selected_chunk.status}",
@@ -562,8 +788,9 @@ def _render_focus_panel(dashboard: TuiDashboardView) -> Panel:
             f"{selected_chunk.end_seconds:.2f}s"
         ),
         f"Candidates: {selected_chunk.candidate_count}",
-        f"Text: {excerpt}",
+        "Text:",
     ]
+    lines.extend(_wrap_block(selected_chunk.text.strip(), indent="  "))
     review_context = dashboard.review_context
     if review_context is not None:
         lines.extend(_render_review_context_lines(review_context))
@@ -583,19 +810,8 @@ def _render_review_context_lines(
     if review_context.messages:
         latest_message = review_context.messages[-1]
         content = " ".join(latest_message.content.split())
-        if len(content) > 120:
-            content = content[:117] + "..."
-        lines.append(f"Latest {latest_message.role}: {content}")
-    if review_context.suggestions:
-        lines.append(f"Suggestions: {len(review_context.suggestions)}")
-        for suggestion in review_context.suggestions[:3]:
-            lines.append(
-                f"{suggestion.suggestion_index + 1}. "
-                f"{suggestion.candidate_type} | "
-                f"{suggestion.simplified} | "
-                f"{suggestion.english} | "
-                f"{suggestion.status}"
-            )
+        lines.append(f"Latest {latest_message.role}:")
+        lines.extend(_wrap_block(content, indent="  "))
     return lines
 
 
@@ -631,16 +847,16 @@ def _render_candidate_lines(
         lines.append(
             f"Publish Queue: {ready_count} ready, {published_count} published locally"
         )
-        for index, candidate in enumerate(candidates[:3], start=1):
+        for index, candidate in enumerate(candidates, start=1):
             candidate_line = (
-                f"{index}. {candidate.candidate_type} | "
+                f"{candidate.candidate_type} | "
                 f"{candidate.simplified or '-'} | "
                 f"{candidate.english or '-'} | "
                 f"{_describe_candidate_publish_state(candidate)}"
             )
             if candidate.anki_note_id is not None:
                 candidate_line += f" | note {candidate.anki_note_id}"
-            lines.append(candidate_line)
+            lines.extend(_wrap_indexed_row(index=index, body=candidate_line))
     return lines
 
 
@@ -657,3 +873,36 @@ def _describe_candidate_publish_state(candidate: TuiCandidateView) -> str:
     if candidate.status == "promoted":
         return "ready to publish"
     return candidate.status
+
+
+def _wrap_block(text: str, *, indent: str) -> list[str]:
+    """Wrap one free-form text block for the focus panel."""
+
+    normalized = " ".join(text.split())
+    if not normalized:
+        return [f"{indent}-"]
+    wrapped = wrap(
+        normalized,
+        width=FOCUS_WRAP_WIDTH,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return [f"{indent}{line}" for line in wrapped]
+
+
+def _wrap_indexed_row(*, index: int, body: str) -> list[str]:
+    """Wrap one numbered row while keeping the index visible."""
+
+    prefix = f"{index}. "
+    wrapped = wrap(
+        body,
+        width=FOCUS_WRAP_WIDTH - len(prefix),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    if not wrapped:
+        return [prefix.rstrip()]
+    lines = [f"{prefix}{wrapped[0]}"]
+    continuation_prefix = " " * len(prefix)
+    lines.extend(f"{continuation_prefix}{line}" for line in wrapped[1:])
+    return lines

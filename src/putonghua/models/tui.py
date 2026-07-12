@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from putonghua.models.tutorial import TutorialSessionView
+
 
 @dataclass(frozen=True)
 class TuiProjectView:
@@ -50,24 +52,11 @@ class TuiReviewMessageView:
 
 
 @dataclass(frozen=True)
-class TuiReviewSuggestionView:
-    """Persisted review suggestion summary for the selected chunk."""
-
-    id: str
-    suggestion_index: int
-    candidate_type: str
-    simplified: str
-    english: str
-    status: str
-
-
-@dataclass(frozen=True)
 class TuiReviewContextView:
     """Latest persisted review context for the selected chunk."""
 
     conversation_id: str
     messages: list[TuiReviewMessageView]
-    suggestions: list[TuiReviewSuggestionView]
 
 
 @dataclass(frozen=True)
@@ -105,3 +94,4 @@ class TuiDashboardView:
     candidates: list[TuiCandidateView]
     review_context: TuiReviewContextView | None
     publish_target: TuiPublishTargetView | None
+    tutorial: TutorialSessionView | None = None

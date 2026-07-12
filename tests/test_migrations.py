@@ -19,6 +19,7 @@ def test_migrate_database_applies_initial_schema(tmp_path: Path) -> None:
         "007_review_conversations",
         "008_review_suggestions",
         "009_publication_record_uniqueness",
+        "010_tutorial_sessions",
     ]
 
     with sqlite3.connect(database_path) as connection:
@@ -43,6 +44,7 @@ def test_migrate_database_applies_initial_schema(tmp_path: Path) -> None:
     assert "review_conversations" in tables
     assert "review_messages" in tables
     assert "review_suggestions" in tables
+    assert "tutorial_sessions" in tables
 
     with sqlite3.connect(database_path) as connection:
         columns = {
@@ -69,5 +71,6 @@ def test_migrate_database_is_idempotent(tmp_path: Path) -> None:
         "007_review_conversations",
         "008_review_suggestions",
         "009_publication_record_uniqueness",
+        "010_tutorial_sessions",
     ]
     assert second_run == []

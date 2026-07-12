@@ -8,6 +8,7 @@ from putonghua.database.repositories import (
     SourceCreateRecord,
     SourceRepository,
     TranscriptSegmentRecord,
+    TutorialSessionRepository,
 )
 
 
@@ -273,3 +274,80 @@ def test_publication_record_repository_creates_and_marks_published() -> None:
     assert record.putonghua_id == "candidate-1"
     assert record.anki_note_id == "42001"
     assert record.status == "published"
+
+
+def test_tutorial_session_repository_tracks_active_and_reset_state() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE tutorial_sessions (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            current_step TEXT NOT NULL,
+            project_id TEXT,
+            source_id TEXT,
+            study_chunk_id TEXT,
+            review_conversation_id TEXT,
+            review_suggestion_id TEXT,
+            candidate_card_id TEXT,
+            publication_record_id TEXT,
+            completed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX idx_tutorial_sessions_active
+        ON tutorial_sessions(status)
+        WHERE status = 'active';
+        """
+    )
+
+    repository = TutorialSessionRepository(connection)
+    session_id = repository.create_session(
+        current_step="context_ready",
+        project_id="project-1",
+        source_id="source-1",
+        study_chunk_id="chunk-1",
+    )
+    active = repository.get_active_session()
+
+    assert active is not None
+    assert active.id == session_id
+    assert active.current_step == "context_ready"
+
+    repository.update_session(
+        session_id,
+        status="completed",
+        current_step="completed",
+        project_id="project-1",
+        source_id="source-1",
+        study_chunk_id="chunk-1",
+        review_conversation_id="conversation-1",
+        review_suggestion_id="suggestion-1",
+        candidate_card_id="candidate-1",
+        publication_record_id="publication-1",
+        completed_at=None,
+    )
+    completed = connection.execute(
+        """
+        SELECT status, current_step, review_conversation_id, completed_at
+        FROM tutorial_sessions
+        WHERE id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+
+    assert completed["status"] == "completed"
+    assert completed["current_step"] == "completed"
+    assert completed["review_conversation_id"] == "conversation-1"
+    assert completed["completed_at"] is not None
+
+    second_session_id = repository.create_session(
+        current_step="context_ready",
+        project_id=None,
+        source_id=None,
+        study_chunk_id=None,
+    )
+    repository.mark_reset(second_session_id)
+
+    assert repository.get_active_session() is None

@@ -22,7 +22,7 @@ The repository currently supports:
 - subtitle download with OpenAI transcription fallback
 - transcript segmentation into `study_chunks`
 - chunk-scoped candidate extraction
-- chunk-scoped review chat with persisted suggestions
+- chunk-scoped review chat that can add more candidates to the current chunk
 - suggestion promotion into durable candidate cards
 - AnkiConnect discovery
 - one safe candidate publish path into an existing Anki note type
@@ -94,7 +94,7 @@ Run chunk extraction:
 uv run putonghua chunk extract --chunk-id CHUNK_ID --config config.yaml
 ```
 
-Run review chat and persist suggestions:
+Run review chat and add candidate ideas to the chunk:
 
 ```bash
 uv run putonghua chunk chat --chunk-id CHUNK_ID --prompt "Suggest one strong sentence card." --config config.yaml
@@ -118,11 +118,80 @@ Open the interactive session explicitly:
 uv run putonghua tui --config config.yaml
 ```
 
+Start the guided tutorial from inside the TUI:
+
+```text
+tutorial
+```
+
 Publish a promoted candidate directly:
 
 ```bash
 uv run putonghua candidate publish --candidate-id CANDIDATE_ID --config config.yaml
 ```
+
+## Recommended First Run
+
+The recommended first-run path is the interactive tutorial inside the TUI. It
+uses real persisted local state, keeps the normal dashboard visible, walks the
+operator through each action and decision, and only advances when the
+underlying workflow state exists in SQLite.
+
+Start it from the TUI prompt:
+
+```text
+tutorial
+```
+
+The first slice walks the operator through these real workflow stages:
+
+- select the pending tutorial chunk
+- extract candidates for that chunk
+- optionally refine in review chat, which adds more candidates to the same chunk
+- promote one candidate into the publish queue
+- publish that candidate to Anki and persist the returned note id
+
+Useful tutorial commands inside the TUI:
+
+- `tutorial`: start a fresh tutorial from step 1 and clear prior tutorial-only workflow artifacts
+- `tutorial resume`: resume the active tutorial session if you intentionally want to continue it
+- `tutorial next`: advance the guided intro when the tutorial is teaching layout or workflow basics
+- `tutorial status`: show the current checklist and blocking state
+- `tutorial reset`: clear tutorial progress and tutorial-only workflow artifacts without removing unrelated project data
+- `n`: focus the next pending chunk in the current source
+
+## Tutorial Prerequisites
+
+The tutorial can bootstrap its own local project and source, but live
+completion still depends on the same external setup as the normal workflow:
+
+- `OPENAI_API_KEY` available for extraction and review
+- Anki Desktop running
+- AnkiConnect installed in the active Anki profile
+- a valid `anki.deck_name` and `anki.note_type_name` in `config.yaml`
+
+Before claiming the tutorial completes end to end, verify Anki explicitly:
+
+```bash
+uv run putonghua anki check --config config.yaml
+```
+
+## Tutorial Success And Reset
+
+Tutorial success means all of the following are true:
+
+- the active tutorial checklist shows every step complete
+- a local publication record exists for the promoted tutorial candidate
+- that publication record includes a non-null Anki note id
+
+Reset clears the active tutorial session plus tutorial-only extracted
+candidates, review conversations, suggestions, and local publication records.
+It does not remove unrelated learner data. After a reset, `tutorial` starts a
+fresh walkthrough from step 1, while `tutorial resume` only continues an
+existing active tutorial.
+
+For a live operator walkthrough, use
+[docs/work/tutorial-uat-checklist.md](docs/work/tutorial-uat-checklist.md).
 
 ## Quality Gate
 
