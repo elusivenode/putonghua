@@ -1,0 +1,24 @@
+app:
+  data_dir: .local/share/putonghua
+  database_path: .local/share/putonghua/putonghua.db
+  log_level: INFO
+anki:
+  base_url: http://127.0.0.1:8765
+  api_key: null
+  timeout_seconds: 5.0
+  default_deck: null
+  default_note_type: null
+  publish_tags: []
+openai:
+  api_key: null
+  transcription_model: whisper-1
+  transcription_language: zh
+  transcription_prompt: null
+  timeout_seconds: 60.0
+  max_upload_bytes: 24000000
+  transcription_bitrate_kbps: 64
+  chunk_duration_seconds: 480
+  extraction_model: gpt-4.1-mini
+  extraction_timeout_seconds: 120.0
+  review_model: gpt-4.1-mini
+  review_timeout_seconds: 120.0
