@@ -99,6 +99,9 @@ ipython_config.py
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 # uv.lock
+.uv-cache/
+.local/
+config.yaml
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -169,6 +172,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.ruff_cache/
 .dmypy.json
 dmypy.json
 
