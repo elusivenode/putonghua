@@ -9,6 +9,7 @@ from typing import Protocol
 from putonghua.database.connection import connect
 from putonghua.database.migrations import migrate_database
 from putonghua.database.repositories import (
+    CandidateCardCreateRecord,
     CandidateRepository,
     ReviewConversationRepository,
     ReviewConversationRow,
@@ -16,6 +17,7 @@ from putonghua.database.repositories import (
     ReviewSuggestionCreateRecord,
     ReviewSuggestionRepository,
     ReviewSuggestionRow,
+    SourceRepository,
     StudyChunkRepository,
 )
 from putonghua.models.candidates import CandidateCardView, parse_candidate_type
@@ -95,6 +97,7 @@ class ChunkReviewService:
             candidate_repository = CandidateRepository(connection)
             conversation_repository = ReviewConversationRepository(connection)
             suggestion_repository = ReviewSuggestionRepository(connection)
+            source_repository = SourceRepository(connection)
 
             chunk_row = chunk_repository.get_chunk(chunk_id)
             if chunk_row is None:
@@ -157,6 +160,36 @@ class ChunkReviewService:
                 conversation.id,
                 "assistant",
                 response.assistant_text,
+            )
+            source = source_repository.get_source_context(chunk.source_id)
+            if source is None:
+                message = f"No source found for chunk {chunk_id}"
+                raise ValueError(message)
+            candidate_repository.create_candidates(
+                [
+                    CandidateCardCreateRecord(
+                        project_id=source.project_id,
+                        source_id=source.id,
+                        study_chunk_id=chunk_id,
+                        candidate_type=card.candidate_type,
+                        simplified=card.simplified,
+                        traditional=card.traditional,
+                        pinyin=card.pinyin,
+                        english=card.english,
+                        provenance={
+                            "origin": "review_chat",
+                            "conversation_id": conversation.id,
+                            "source_message_id": assistant_message_id,
+                            "candidate_type": card.candidate_type,
+                            "source_excerpt": card.source_excerpt,
+                            "rationale": card.rationale,
+                            "provider": conversation.provider,
+                            "model": conversation.model,
+                            "prompt_version": conversation.prompt_version,
+                        },
+                    )
+                    for card in response.suggested_cards
+                ]
             )
             suggestion_repository.replace_for_message(
                 assistant_message_id,

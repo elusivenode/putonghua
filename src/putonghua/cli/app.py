@@ -50,6 +50,7 @@ from putonghua.services.study_chunks import (
     StudyChunkService,
 )
 from putonghua.services.tui_session import TuiSessionService
+from putonghua.services.tutorial import TutorialService
 from putonghua.services.youtube_import import (
     YouTubeImportService,
     YtDlpDownloader,
@@ -541,7 +542,7 @@ def chunk_chat(
     console.print("Assistant:")
     console.print(result.assistant_text)
     if result.suggested_cards:
-        console.print("Suggested Cards:")
+        console.print("Added Candidates:")
         for card in result.suggested_cards:
             _render_candidate_draft(card)
 
@@ -774,6 +775,7 @@ def _build_tui_session_service(config_path: Path) -> TuiSessionService:
         review_service=review_service,
         publish_service=publish_service,
         publish_target=publish_target,
+        tutorial_service=TutorialService(settings.app.database_path),
     )
 
 

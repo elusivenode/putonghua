@@ -53,7 +53,7 @@ class CandidateExtractionResult:
 
 @dataclass(frozen=True)
 class CandidatePromotionResult:
-    """Result of promoting one stored review suggestion."""
+    """Result of promoting one candidate into the publish queue."""
 
     suggestion_id: str
     candidate_id: str

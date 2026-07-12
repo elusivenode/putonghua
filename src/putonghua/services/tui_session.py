@@ -12,7 +12,6 @@ from putonghua.database.repositories import (
     ProjectRepository,
     PublicationRecordRepository,
     ReviewConversationRepository,
-    ReviewSuggestionRepository,
     SourceRepository,
     StudyChunkRepository,
 )
@@ -30,13 +29,16 @@ from putonghua.models.tui import (
     TuiPublishTargetView,
     TuiReviewContextView,
     TuiReviewMessageView,
-    TuiReviewSuggestionView,
     TuiSourceView,
 )
+from putonghua.models.tutorial import TutorialSessionView
 from putonghua.services.candidate_extraction import CandidateExtractionService
+from putonghua.services.candidate_promotion import CandidatePromotionService
 from putonghua.services.candidate_publish import CandidatePublishService
 from putonghua.services.chunk_review import ChunkReviewService
 from putonghua.services.review_suggestions import ReviewSuggestionService
+from putonghua.services.study_chunks import StudyChunkService
+from putonghua.services.tutorial import TutorialService
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class TuiSessionService:
     review_service: ChunkReviewService | None = None
     publish_service: CandidatePublishService | None = None
     publish_target: TuiPublishTargetView | None = None
+    tutorial_service: TutorialService | None = None
 
     def get_dashboard(
         self,
@@ -60,13 +63,15 @@ class TuiSessionService:
 
         migrate_database(self.database_path)
         with connect(self.database_path) as connection:
+            tutorial_session = self._refresh_tutorial_session(
+                selected_chunk_id=selected_chunk_id,
+            )
             project_repository = ProjectRepository(connection)
             source_repository = SourceRepository(connection)
             chunk_repository = StudyChunkRepository(connection)
             candidate_repository = CandidateRepository(connection)
             publication_repository = PublicationRecordRepository(connection)
             conversation_repository = ReviewConversationRepository(connection)
-            suggestion_repository = ReviewSuggestionRepository(connection)
 
             projects = [
                 TuiProjectView(
@@ -76,8 +81,11 @@ class TuiSessionService:
                 )
                 for row in project_repository.list_projects()
             ]
+            tutorial_project_id = (
+                tutorial_session.project_id if tutorial_session is not None else None
+            )
             resolved_project_id = _resolve_selected_id(
-                selected_project_id,
+                tutorial_project_id or selected_project_id,
                 [project.id for project in projects],
             )
 
@@ -98,8 +106,11 @@ class TuiSessionService:
                     else []
                 )
             ]
+            tutorial_source_id = (
+                tutorial_session.source_id if tutorial_session is not None else None
+            )
             resolved_source_id = _resolve_selected_id(
-                selected_source_id,
+                tutorial_source_id or selected_source_id,
                 [source.id for source in sources],
             )
 
@@ -121,8 +132,13 @@ class TuiSessionService:
                     else []
                 )
             ]
+            tutorial_chunk_id = (
+                tutorial_session.study_chunk_id
+                if tutorial_session is not None
+                else None
+            )
             resolved_chunk_id = _resolve_selected_id(
-                selected_chunk_id,
+                selected_chunk_id or tutorial_chunk_id,
                 [chunk.id for chunk in chunks],
             )
             candidates = _build_candidate_views(
@@ -132,7 +148,6 @@ class TuiSessionService:
             )
             review_context = _build_review_context(
                 conversation_repository=conversation_repository,
-                suggestion_repository=suggestion_repository,
                 resolved_chunk_id=resolved_chunk_id,
             )
 
@@ -146,6 +161,7 @@ class TuiSessionService:
             candidates=candidates,
             review_context=review_context,
             publish_target=self.publish_target,
+            tutorial=tutorial_session,
         )
 
     def extract_chunk(self, chunk_id: str) -> CandidateExtractionResult:
@@ -171,6 +187,13 @@ class TuiSessionService:
             suggestion_id
         )
 
+    def promote_candidate(self, candidate_id: str) -> CandidatePromotionResult:
+        """Promote one extracted candidate directly."""
+
+        return CandidatePromotionService(self.database_path).promote_candidate(
+            candidate_id
+        )
+
     def publish_candidate(self, candidate_id: str) -> CandidatePublishResult:
         """Publish one durable candidate from the current chunk."""
 
@@ -181,6 +204,77 @@ class TuiSessionService:
             )
             raise ValueError(message)
         return self.publish_service.publish_candidate(candidate_id)
+
+    def complete_chunk(self, chunk_id: str) -> None:
+        """Mark one selected chunk completed."""
+
+        StudyChunkService(database_path=self.database_path).update_chunk_status(
+            chunk_id,
+            "completed",
+        )
+
+    def start_tutorial(self) -> TutorialSessionView:
+        """Start a fresh dedicated tutorial session from step one."""
+
+        if self.tutorial_service is None:
+            message = "Tutorial support is not configured for this TUI session."
+            raise ValueError(message)
+        return self.tutorial_service.start_fresh_session()
+
+    def resume_tutorial(self) -> TutorialSessionView:
+        """Resume the active tutorial session, or create one if absent."""
+
+        if self.tutorial_service is None:
+            message = "Tutorial support is not configured for this TUI session."
+            raise ValueError(message)
+        return self.tutorial_service.ensure_active_session()
+
+    def get_tutorial_session(self) -> TutorialSessionView | None:
+        """Return the active tutorial session, if any."""
+
+        if self.tutorial_service is None:
+            return None
+        try:
+            return self.tutorial_service.get_active_session()
+        except ValueError:
+            return None
+
+    def reset_tutorial(self) -> bool:
+        """Reset the active tutorial session, if present."""
+
+        if self.tutorial_service is None:
+            message = "Tutorial support is not configured for this TUI session."
+            raise ValueError(message)
+        return self.tutorial_service.reset_active_session()
+
+    def advance_tutorial(self) -> TutorialSessionView:
+        """Advance one manual tutorial step."""
+
+        if self.tutorial_service is None:
+            message = "Tutorial support is not configured for this TUI session."
+            raise ValueError(message)
+        return self.tutorial_service.advance_active_session()
+
+    def _refresh_tutorial_session(
+        self,
+        *,
+        selected_chunk_id: str | None,
+    ) -> TutorialSessionView | None:
+        """Return the active tutorial session with refreshed progress."""
+
+        if self.tutorial_service is None:
+            return None
+        active_session = self.tutorial_service.get_active_session()
+        if active_session is None:
+            return None
+        try:
+            return self.tutorial_service.refresh_active_session(
+                project_id=active_session.project_id,
+                source_id=active_session.source_id,
+                study_chunk_id=selected_chunk_id or active_session.study_chunk_id,
+            )
+        except ValueError:
+            return None
 
 
 def _resolve_selected_id(
@@ -199,7 +293,6 @@ def _resolve_selected_id(
 def _build_review_context(
     *,
     conversation_repository: ReviewConversationRepository,
-    suggestion_repository: ReviewSuggestionRepository,
     resolved_chunk_id: str | None,
 ) -> TuiReviewContextView | None:
     """Return the latest persisted review context for the selected chunk."""
@@ -219,19 +312,6 @@ def _build_review_context(
                 content=message.content,
             )
             for message in conversation_repository.list_messages(conversation.id)
-        ],
-        suggestions=[
-            TuiReviewSuggestionView(
-                id=suggestion.id,
-                suggestion_index=suggestion.suggestion_index,
-                candidate_type=suggestion.candidate_type,
-                simplified=suggestion.simplified,
-                english=suggestion.english,
-                status=suggestion.status,
-            )
-            for suggestion in suggestion_repository.list_for_conversation(
-                conversation.id
-            )
         ],
     )
 

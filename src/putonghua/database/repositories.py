@@ -240,6 +240,23 @@ class PublicationRecordRow:
     status: str
 
 
+@dataclass(frozen=True)
+class TutorialSessionRow:
+    """Persisted tutorial session row."""
+
+    id: str
+    status: str
+    current_step: str
+    project_id: str | None
+    source_id: str | None
+    study_chunk_id: str | None
+    review_conversation_id: str | None
+    review_suggestion_id: str | None
+    candidate_card_id: str | None
+    publication_record_id: str | None
+    completed_at: str | None
+
+
 class ProjectRepository:
     """Project persistence helpers."""
 
@@ -362,6 +379,27 @@ class SourceRepository:
             )
 
         return source_id
+
+    def get_source_by_content_hash(self, content_hash: str) -> SourceContextRow | None:
+        """Return one source context by content hash."""
+
+        row = self._connection.execute(
+            """
+            SELECT id, project_id, title
+            FROM sources
+            WHERE content_hash = ?
+            ORDER BY imported_at ASC, id ASC
+            LIMIT 1
+            """,
+            (content_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        return SourceContextRow(
+            id=str(row["id"]),
+            project_id=str(row["project_id"]),
+            title=str(row["title"]),
+        )
 
     def list_transcript_segments(self, source_id: str) -> list[TranscriptSegmentRow]:
         """Return transcript segments for a source ordered by index."""
@@ -730,6 +768,17 @@ class CandidateRepository:
             for row in rows
         ]
 
+    def delete_for_source(self, source_id: str) -> None:
+        """Delete all candidate cards for one source."""
+
+        self._connection.execute(
+            """
+            DELETE FROM candidate_cards
+            WHERE source_id = ?
+            """,
+            (source_id,),
+        )
+
     def get_candidate(self, candidate_id: str) -> CandidateCardRow | None:
         """Return one candidate card by id."""
 
@@ -866,6 +915,171 @@ class PublicationRecordRepository:
             (str(anki_note_id), publication_id),
         )
 
+    def delete_for_source(self, source_id: str) -> None:
+        """Delete publication records linked to candidates from one source."""
+
+        self._connection.execute(
+            """
+            DELETE FROM publication_records
+            WHERE candidate_card_id IN (
+                SELECT id
+                FROM candidate_cards
+                WHERE source_id = ?
+            )
+            """,
+            (source_id,),
+        )
+
+
+class TutorialSessionRepository:
+    """Tutorial session persistence helpers."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def create_session(
+        self,
+        *,
+        current_step: str,
+        project_id: str | None,
+        source_id: str | None,
+        study_chunk_id: str | None,
+    ) -> str:
+        """Insert one active tutorial session."""
+
+        session_id = str(uuid4())
+        self._connection.execute(
+            """
+            INSERT INTO tutorial_sessions(
+                id,
+                status,
+                current_step,
+                project_id,
+                source_id,
+                study_chunk_id
+            )
+            VALUES (?, 'active', ?, ?, ?, ?)
+            """,
+            (session_id, current_step, project_id, source_id, study_chunk_id),
+        )
+        return session_id
+
+    def get_active_session(self) -> TutorialSessionRow | None:
+        """Return the currently active tutorial session, if any."""
+
+        row = self._connection.execute(
+            """
+            SELECT
+                id,
+                status,
+                current_step,
+                project_id,
+                source_id,
+                study_chunk_id,
+                review_conversation_id,
+                review_suggestion_id,
+                candidate_card_id,
+                publication_record_id,
+                completed_at
+            FROM tutorial_sessions
+            WHERE status = 'active'
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return _row_to_tutorial_session(row)
+
+    def get_session(self, session_id: str) -> TutorialSessionRow | None:
+        """Return one tutorial session by id."""
+
+        row = self._connection.execute(
+            """
+            SELECT
+                id,
+                status,
+                current_step,
+                project_id,
+                source_id,
+                study_chunk_id,
+                review_conversation_id,
+                review_suggestion_id,
+                candidate_card_id,
+                publication_record_id,
+                completed_at
+            FROM tutorial_sessions
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return _row_to_tutorial_session(row)
+
+    def update_session(
+        self,
+        session_id: str,
+        *,
+        status: str,
+        current_step: str,
+        project_id: str | None,
+        source_id: str | None,
+        study_chunk_id: str | None,
+        review_conversation_id: str | None,
+        review_suggestion_id: str | None,
+        candidate_card_id: str | None,
+        publication_record_id: str | None,
+        completed_at: str | None,
+    ) -> None:
+        """Persist resolved tutorial progress metadata."""
+
+        self._connection.execute(
+            """
+            UPDATE tutorial_sessions
+            SET
+                status = ?,
+                current_step = ?,
+                project_id = ?,
+                source_id = ?,
+                study_chunk_id = ?,
+                review_conversation_id = ?,
+                review_suggestion_id = ?,
+                candidate_card_id = ?,
+                publication_record_id = ?,
+                completed_at = CASE
+                    WHEN ? = 'completed' AND completed_at IS NULL THEN CURRENT_TIMESTAMP
+                    ELSE ?
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                status,
+                current_step,
+                project_id,
+                source_id,
+                study_chunk_id,
+                review_conversation_id,
+                review_suggestion_id,
+                candidate_card_id,
+                publication_record_id,
+                status,
+                completed_at,
+                session_id,
+            ),
+        )
+
+    def mark_reset(self, session_id: str) -> None:
+        """Mark one tutorial session as reset."""
+
+        self._connection.execute(
+            """
+            UPDATE tutorial_sessions
+            SET
+                status = 'reset',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (session_id,),
+        )
+
 
 class ReviewConversationRepository:
     """Chunk review conversation persistence helpers."""
@@ -977,6 +1191,31 @@ class ReviewConversationRepository:
             )
             for row in rows
         ]
+
+    def delete_for_chunk_ids(self, chunk_ids: list[str]) -> None:
+        """Delete conversations and messages for the given chunks."""
+
+        if not chunk_ids:
+            return
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        self._connection.execute(
+            f"""
+            DELETE FROM review_messages
+            WHERE conversation_id IN (
+                SELECT id
+                FROM review_conversations
+                WHERE study_chunk_id IN ({placeholders})
+            )
+            """,
+            tuple(chunk_ids),
+        )
+        self._connection.execute(
+            f"""
+            DELETE FROM review_conversations
+            WHERE study_chunk_id IN ({placeholders})
+            """,
+            tuple(chunk_ids),
+        )
 
 
 class ReviewSuggestionRepository:
@@ -1092,6 +1331,38 @@ class ReviewSuggestionRepository:
             for row in rows
         ]
 
+    def get_latest_promoted_for_chunk(
+        self,
+        chunk_id: str,
+    ) -> ReviewSuggestionRow | None:
+        """Return the latest promoted suggestion for one chunk."""
+
+        row = self._connection.execute(
+            """
+            SELECT
+                id,
+                conversation_id,
+                study_chunk_id,
+                source_message_id,
+                suggestion_index,
+                candidate_type,
+                simplified,
+                traditional,
+                pinyin,
+                english,
+                rationale,
+                source_excerpt,
+                status,
+                promoted_candidate_card_id
+            FROM review_suggestions
+            WHERE study_chunk_id = ? AND status = 'promoted'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (chunk_id,),
+        ).fetchone()
+        return _row_to_review_suggestion(row)
+
     def get_suggestion(self, suggestion_id: str) -> ReviewSuggestionRow | None:
         """Return one structured suggestion by id."""
 
@@ -1117,32 +1388,7 @@ class ReviewSuggestionRepository:
             """,
             (suggestion_id,),
         ).fetchone()
-        if row is None:
-            return None
-        return ReviewSuggestionRow(
-            id=str(row["id"]),
-            conversation_id=str(row["conversation_id"]),
-            study_chunk_id=str(row["study_chunk_id"]),
-            source_message_id=(
-                str(row["source_message_id"])
-                if row["source_message_id"] is not None
-                else None
-            ),
-            suggestion_index=int(row["suggestion_index"]),
-            candidate_type=str(row["candidate_type"]),
-            simplified=str(row["simplified"]),
-            traditional=str(row["traditional"]),
-            pinyin=str(row["pinyin"]),
-            english=str(row["english"]),
-            rationale=str(row["rationale"]),
-            source_excerpt=str(row["source_excerpt"]),
-            status=str(row["status"]),
-            promoted_candidate_card_id=(
-                str(row["promoted_candidate_card_id"])
-                if row["promoted_candidate_card_id"] is not None
-                else None
-            ),
-        )
+        return _row_to_review_suggestion(row)
 
     def mark_promoted(self, suggestion_id: str, candidate_card_id: str) -> None:
         """Mark one suggestion as promoted and link the durable candidate."""
@@ -1154,6 +1400,20 @@ class ReviewSuggestionRepository:
             WHERE id = ?
             """,
             (candidate_card_id, suggestion_id),
+        )
+
+    def delete_for_chunk_ids(self, chunk_ids: list[str]) -> None:
+        """Delete structured suggestions for the given chunks."""
+
+        if not chunk_ids:
+            return
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        self._connection.execute(
+            f"""
+            DELETE FROM review_suggestions
+            WHERE study_chunk_id IN ({placeholders})
+            """,
+            tuple(chunk_ids),
         )
 
 
@@ -1178,4 +1438,79 @@ def _row_to_study_chunk(row: sqlite3.Row | None) -> StudyChunkRow | None:
             else None
         ),
         notes=str(row["notes"]) if row["notes"] is not None else None,
+    )
+
+
+def _row_to_review_suggestion(
+    row: sqlite3.Row | None,
+) -> ReviewSuggestionRow | None:
+    """Convert one review suggestion row into a typed record."""
+
+    if row is None:
+        return None
+    return ReviewSuggestionRow(
+        id=str(row["id"]),
+        conversation_id=str(row["conversation_id"]),
+        study_chunk_id=str(row["study_chunk_id"]),
+        source_message_id=(
+            str(row["source_message_id"])
+            if row["source_message_id"] is not None
+            else None
+        ),
+        suggestion_index=int(row["suggestion_index"]),
+        candidate_type=str(row["candidate_type"]),
+        simplified=str(row["simplified"]),
+        traditional=str(row["traditional"]),
+        pinyin=str(row["pinyin"]),
+        english=str(row["english"]),
+        rationale=str(row["rationale"]),
+        source_excerpt=str(row["source_excerpt"]),
+        status=str(row["status"]),
+        promoted_candidate_card_id=(
+            str(row["promoted_candidate_card_id"])
+            if row["promoted_candidate_card_id"] is not None
+            else None
+        ),
+    )
+
+
+def _row_to_tutorial_session(
+    row: sqlite3.Row | None,
+) -> TutorialSessionRow | None:
+    """Convert one tutorial session row into a typed record."""
+
+    if row is None:
+        return None
+    return TutorialSessionRow(
+        id=str(row["id"]),
+        status=str(row["status"]),
+        current_step=str(row["current_step"]),
+        project_id=str(row["project_id"]) if row["project_id"] is not None else None,
+        source_id=str(row["source_id"]) if row["source_id"] is not None else None,
+        study_chunk_id=(
+            str(row["study_chunk_id"]) if row["study_chunk_id"] is not None else None
+        ),
+        review_conversation_id=(
+            str(row["review_conversation_id"])
+            if row["review_conversation_id"] is not None
+            else None
+        ),
+        review_suggestion_id=(
+            str(row["review_suggestion_id"])
+            if row["review_suggestion_id"] is not None
+            else None
+        ),
+        candidate_card_id=(
+            str(row["candidate_card_id"])
+            if row["candidate_card_id"] is not None
+            else None
+        ),
+        publication_record_id=(
+            str(row["publication_record_id"])
+            if row["publication_record_id"] is not None
+            else None
+        ),
+        completed_at=(
+            str(row["completed_at"]) if row["completed_at"] is not None else None
+        ),
     )
