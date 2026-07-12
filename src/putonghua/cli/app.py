@@ -5,8 +5,10 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from typer import Context
 
 from putonghua import __version__
+from putonghua.cli.tui import run_tui_session
 from putonghua.config.loader import load_settings
 from putonghua.database.connection import connect
 from putonghua.database.migrations import migrate_database
@@ -21,6 +23,7 @@ from putonghua.models.candidates import (
 )
 from putonghua.models.chunks import StudyChunkView
 from putonghua.models.review import ReviewSuggestionView
+from putonghua.models.tui import TuiPublishTargetView
 from putonghua.providers.anki_connect import AnkiConnectConfig, AnkiConnectProvider
 from putonghua.providers.openai_candidate_extraction import (
     OpenAICandidateExtractionConfig,
@@ -46,6 +49,7 @@ from putonghua.services.study_chunks import (
     StudyChunkBuildConfig,
     StudyChunkService,
 )
+from putonghua.services.tui_session import TuiSessionService
 from putonghua.services.youtube_import import (
     YouTubeImportService,
     YtDlpDownloader,
@@ -53,8 +57,12 @@ from putonghua.services.youtube_import import (
 
 app = typer.Typer(
     name="putonghua",
-    help="Repository foundation commands for the putonghua project.",
-    no_args_is_help=True,
+    help=(
+        "Interactive Mandarin card-workflow CLI. "
+        "Run without a subcommand to open the session; scripted commands remain "
+        "available."
+    ),
+    no_args_is_help=False,
 )
 db_app = typer.Typer(help="Database maintenance commands.")
 anki_app = typer.Typer(help="AnkiConnect commands.")
@@ -78,9 +86,24 @@ app.add_typer(chunk_app, name="chunk")
 app.add_typer(candidate_app, name="candidate")
 
 
-@app.callback()
-def main_callback() -> None:
-    """Run the top-level CLI."""
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: Context,
+    config_path: ConfigOption = DEFAULT_CONFIG_PATH,
+) -> None:
+    """Run the top-level CLI or enter the interactive session."""
+
+    if ctx.invoked_subcommand is not None:
+        return
+
+    settings = load_settings(config_path)
+    configure_logging(settings.app.log_level)
+    service = _build_tui_session_service(config_path)
+    run_tui_session(
+        service=service,
+        console=console,
+        input_func=console.input,
+    )
 
 
 @app.command("version")
@@ -98,6 +121,20 @@ def init(config_path: ConfigOption = DEFAULT_CONFIG_PATH) -> None:
     configure_logging(settings.app.log_level)
     settings.app.data_dir.mkdir(parents=True, exist_ok=True)
     console.print(f"Initialized data directory at {settings.app.data_dir}")
+
+
+@app.command("tui")
+def tui(config_path: ConfigOption = DEFAULT_CONFIG_PATH) -> None:
+    """Open the interactive terminal session shell explicitly."""
+
+    settings = load_settings(config_path)
+    configure_logging(settings.app.log_level)
+    service = _build_tui_session_service(config_path)
+    run_tui_session(
+        service=service,
+        console=console,
+        input_func=console.input,
+    )
 
 
 @db_app.command("migrate")
@@ -428,16 +465,7 @@ def chunk_extract(
         console.print("Chunk extraction requires OPENAI_API_KEY or openai.api_key.")
         raise typer.Exit(code=1)
 
-    service = CandidateExtractionService(
-        database_path=settings.app.database_path,
-        provider=OpenAICandidateExtractionProvider(
-            OpenAICandidateExtractionConfig(
-                api_key=settings.openai.api_key,
-                model=settings.openai.extraction_model,
-                timeout_seconds=settings.openai.extraction_timeout_seconds,
-            )
-        ),
-    )
+    service = _build_candidate_extraction_service(config_path)
 
     try:
         result = service.extract_for_chunk(chunk_id)
@@ -501,18 +529,7 @@ def chunk_chat(
         console.print("Chunk chat requires OPENAI_API_KEY or openai.api_key.")
         raise typer.Exit(code=1)
 
-    service = ChunkReviewService(
-        database_path=settings.app.database_path,
-        provider=OpenAIChunkReviewProvider(
-            OpenAIChunkReviewConfig(
-                api_key=settings.openai.api_key,
-                model=settings.openai.review_model,
-                timeout_seconds=settings.openai.review_timeout_seconds,
-            )
-        ),
-        provider_name="openai",
-        model_name=settings.openai.review_model,
-    )
+    service = _build_chunk_review_service(config_path)
 
     try:
         result = service.chat_for_chunk(chunk_id, prompt)
@@ -681,6 +698,82 @@ def _build_candidate_publish_service(
             note_type_name=note_type_name,
             publish_tags=publish_tags,
         ),
+    )
+
+
+def _build_candidate_extraction_service(
+    config_path: Path,
+) -> CandidateExtractionService:
+    """Build the chunk candidate extraction service from config."""
+
+    settings = load_settings(config_path)
+    if not settings.openai.api_key:
+        message = "Chunk extraction requires OPENAI_API_KEY or openai.api_key."
+        raise ValueError(message)
+
+    return CandidateExtractionService(
+        database_path=settings.app.database_path,
+        provider=OpenAICandidateExtractionProvider(
+            OpenAICandidateExtractionConfig(
+                api_key=settings.openai.api_key,
+                model=settings.openai.extraction_model,
+                timeout_seconds=settings.openai.extraction_timeout_seconds,
+            )
+        ),
+    )
+
+
+def _build_chunk_review_service(config_path: Path) -> ChunkReviewService:
+    """Build the chunk review chat service from config."""
+
+    settings = load_settings(config_path)
+    if not settings.openai.api_key:
+        message = "Chunk chat requires OPENAI_API_KEY or openai.api_key."
+        raise ValueError(message)
+
+    return ChunkReviewService(
+        database_path=settings.app.database_path,
+        provider=OpenAIChunkReviewProvider(
+            OpenAIChunkReviewConfig(
+                api_key=settings.openai.api_key,
+                model=settings.openai.review_model,
+                timeout_seconds=settings.openai.review_timeout_seconds,
+            )
+        ),
+        provider_name="openai",
+        model_name=settings.openai.review_model,
+    )
+
+
+def _build_tui_session_service(config_path: Path) -> TuiSessionService:
+    """Build the TUI session service from config."""
+
+    settings = load_settings(config_path)
+    extraction_service = None
+    review_service = None
+    if settings.openai.api_key:
+        extraction_service = _build_candidate_extraction_service(config_path)
+        review_service = _build_chunk_review_service(config_path)
+    publish_service = None
+    publish_target = None
+    if settings.anki.default_deck and settings.anki.default_note_type:
+        publish_service = _build_candidate_publish_service(
+            config_path=config_path,
+            deck_name=settings.anki.default_deck,
+            note_type_name=settings.anki.default_note_type,
+            publish_tags=list(settings.anki.publish_tags),
+        )
+        publish_target = TuiPublishTargetView(
+            deck_name=settings.anki.default_deck,
+            note_type_name=settings.anki.default_note_type,
+            publish_tags=list(settings.anki.publish_tags),
+        )
+    return TuiSessionService(
+        database_path=settings.app.database_path,
+        extraction_service=extraction_service,
+        review_service=review_service,
+        publish_service=publish_service,
+        publish_target=publish_target,
     )
 
 

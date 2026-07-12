@@ -18,6 +18,15 @@ class ProjectRecord:
 
 
 @dataclass(frozen=True)
+class ProjectListRow:
+    """Persisted project row with dashboard counts."""
+
+    id: str
+    name: str
+    source_count: int
+
+
+@dataclass(frozen=True)
 class TranscriptSegmentRecord:
     """Transcript segment for a source."""
 
@@ -73,6 +82,21 @@ class StudyChunkRow:
 
 
 @dataclass(frozen=True)
+class StudyChunkListRow:
+    """Persisted chunk row with dashboard counts."""
+
+    id: str
+    source_id: str
+    chunk_index: int
+    status: str
+    char_count: int
+    candidate_count: int
+    start_seconds: float
+    end_seconds: float
+    text: str
+
+
+@dataclass(frozen=True)
 class SourceCreateRecord:
     """Payload for inserting a source."""
 
@@ -97,6 +121,20 @@ class SourceContextRow:
     id: str
     project_id: str
     title: str
+
+
+@dataclass(frozen=True)
+class SourceListRow:
+    """Persisted source row with dashboard counts."""
+
+    id: str
+    project_id: str
+    title: str
+    source_type: str
+    transcript_source: str | None
+    candidate_count: int
+    chunk_count: int
+    pending_chunk_count: int
 
 
 @dataclass(frozen=True)
@@ -225,6 +263,30 @@ class ProjectRepository:
         )
         return ProjectRecord(id=project_id, name=name)
 
+    def list_projects(self) -> list[ProjectListRow]:
+        """Return projects ordered for dashboard display."""
+
+        rows = self._connection.execute(
+            """
+            SELECT
+                projects.id,
+                projects.name,
+                COUNT(sources.id) AS source_count
+            FROM projects
+            LEFT JOIN sources ON sources.project_id = projects.id
+            GROUP BY projects.id, projects.name
+            ORDER BY LOWER(projects.name) ASC, projects.id ASC
+            """
+        ).fetchall()
+        return [
+            ProjectListRow(
+                id=str(row["id"]),
+                name=str(row["name"]),
+                source_count=int(row["source_count"]),
+            )
+            for row in rows
+        ]
+
 
 class SourceRepository:
     """Source and transcript persistence helpers."""
@@ -350,6 +412,60 @@ class SourceRepository:
             title=str(row["title"]),
         )
 
+    def list_sources_for_project(self, project_id: str) -> list[SourceListRow]:
+        """Return sources for one project with workflow counts."""
+
+        rows = self._connection.execute(
+            """
+            SELECT
+                sources.id,
+                sources.project_id,
+                sources.title,
+                sources.source_type,
+                sources.transcript_source,
+                COUNT(DISTINCT candidate_cards.id) AS candidate_count,
+                COUNT(DISTINCT study_chunks.id) AS chunk_count,
+                COUNT(
+                    DISTINCT CASE
+                        WHEN study_chunks.status = 'pending' THEN study_chunks.id
+                        ELSE NULL
+                    END
+                ) AS pending_chunk_count
+            FROM sources
+            LEFT JOIN study_chunks ON study_chunks.source_id = sources.id
+            LEFT JOIN candidate_cards ON candidate_cards.source_id = sources.id
+            WHERE sources.project_id = ?
+            GROUP BY
+                sources.id,
+                sources.project_id,
+                sources.title,
+                sources.source_type,
+                sources.transcript_source
+            ORDER BY
+                sources.imported_at ASC,
+                LOWER(sources.title) ASC,
+                sources.id ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        return [
+            SourceListRow(
+                id=str(row["id"]),
+                project_id=str(row["project_id"]),
+                title=str(row["title"]),
+                source_type=str(row["source_type"]),
+                transcript_source=(
+                    str(row["transcript_source"])
+                    if row["transcript_source"] is not None
+                    else None
+                ),
+                candidate_count=int(row["candidate_count"]),
+                chunk_count=int(row["chunk_count"]),
+                pending_chunk_count=int(row["pending_chunk_count"]),
+            )
+            for row in rows
+        ]
+
 
 class StudyChunkRepository:
     """Study chunk persistence helpers."""
@@ -454,6 +570,53 @@ class StudyChunkRepository:
             (chunk_id,),
         ).fetchone()
         return _row_to_study_chunk(row)
+
+    def list_chunks_for_source(self, source_id: str) -> list[StudyChunkListRow]:
+        """Return persisted chunks for one source with candidate counts."""
+
+        rows = self._connection.execute(
+            """
+            SELECT
+                study_chunks.id,
+                study_chunks.source_id,
+                study_chunks.chunk_index,
+                study_chunks.status,
+                study_chunks.char_count,
+                study_chunks.start_seconds,
+                study_chunks.end_seconds,
+                study_chunks.text,
+                COUNT(candidate_cards.id) AS candidate_count
+            FROM study_chunks
+            LEFT JOIN candidate_cards
+                ON candidate_cards.study_chunk_id = study_chunks.id
+            WHERE study_chunks.source_id = ?
+            GROUP BY
+                study_chunks.id,
+                study_chunks.source_id,
+                study_chunks.chunk_index,
+                study_chunks.status,
+                study_chunks.char_count,
+                study_chunks.start_seconds,
+                study_chunks.end_seconds,
+                study_chunks.text
+            ORDER BY study_chunks.chunk_index ASC, study_chunks.id ASC
+            """,
+            (source_id,),
+        ).fetchall()
+        return [
+            StudyChunkListRow(
+                id=str(row["id"]),
+                source_id=str(row["source_id"]),
+                chunk_index=int(row["chunk_index"]),
+                status=str(row["status"]),
+                char_count=int(row["char_count"]),
+                candidate_count=int(row["candidate_count"]),
+                start_seconds=float(row["start_seconds"]),
+                end_seconds=float(row["end_seconds"]),
+                text=str(row["text"]),
+            )
+            for row in rows
+        ]
 
     def update_chunk_status(
         self, chunk_id: str, status: str, notes: str | None

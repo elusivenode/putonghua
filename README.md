@@ -46,7 +46,13 @@ source .venv/bin/activate
 
 ## Canonical Commands
 
-Show the CLI:
+Launch the interactive session:
+
+```bash
+uv run putonghua --config config.yaml
+```
+
+Show the scripted command surface:
 
 ```bash
 uv run putonghua --help
@@ -106,7 +112,13 @@ Promote a stored suggestion:
 uv run putonghua chunk promote --suggestion-id SUGGESTION_ID --config config.yaml
 ```
 
-Publish a promoted candidate:
+Open the interactive session explicitly:
+
+```bash
+uv run putonghua tui --config config.yaml
+```
+
+Publish a promoted candidate directly:
 
 ```bash
 uv run putonghua candidate publish --candidate-id CANDIDATE_ID --config config.yaml
