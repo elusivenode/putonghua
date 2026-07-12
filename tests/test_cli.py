@@ -1,6 +1,8 @@
 from pathlib import Path
+from typing import cast
 
 from pytest import MonkeyPatch
+from rich.console import Console
 from typer.testing import CliRunner
 
 from putonghua.cli.app import app
@@ -12,7 +14,46 @@ def test_help_command_runs() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "Repository foundation commands" in result.stdout
+    assert "Interactive Mandarin card-workflow CLI" in result.stdout
+    assert "--config" in result.stdout
+
+
+def test_root_command_runs_tui_by_default(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "app:",
+                "  data_dir: .local/share/putonghua",
+                "  database_path: .local/share/putonghua/putonghua.db",
+                "  log_level: INFO",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakeService:
+        pass
+
+    def _fake_build_tui_session_service(_: Path) -> _FakeService:
+        return _FakeService()
+
+    def _fake_run_tui_session(**kwargs: object) -> None:
+        assert isinstance(kwargs["service"], _FakeService)
+        cast(Console, kwargs["console"]).print("TUI shell started")
+
+    monkeypatch.setattr(
+        "putonghua.cli.app._build_tui_session_service",
+        _fake_build_tui_session_service,
+    )
+    monkeypatch.setattr("putonghua.cli.app.run_tui_session", _fake_run_tui_session)
+
+    result = runner.invoke(app, ["--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "TUI shell started" in result.stdout
 
 
 def test_db_migrate_command_runs(tmp_path: Path) -> None:
@@ -40,6 +81,42 @@ def test_db_migrate_command_runs(tmp_path: Path) -> None:
     assert "005_candidate_cards_by_chunk" in result.stdout
     assert "008_review_suggestions" in result.stdout
     assert "009_publication_record_uniqueness" in result.stdout
+
+
+def test_tui_command_runs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "app:",
+                "  data_dir: .local/share/putonghua",
+                "  database_path: .local/share/putonghua/putonghua.db",
+                "  log_level: INFO",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakeService:
+        pass
+
+    def _fake_build_tui_session_service(_: Path) -> _FakeService:
+        return _FakeService()
+
+    def _fake_run_tui_session(**kwargs: object) -> None:
+        assert isinstance(kwargs["service"], _FakeService)
+        cast(Console, kwargs["console"]).print("TUI shell started")
+
+    monkeypatch.setattr(
+        "putonghua.cli.app._build_tui_session_service",
+        _fake_build_tui_session_service,
+    )
+    monkeypatch.setattr("putonghua.cli.app.run_tui_session", _fake_run_tui_session)
+
+    result = runner.invoke(app, ["tui", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "TUI shell started" in result.stdout
 
 
 def test_anki_check_command_runs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
