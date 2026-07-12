@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX IF NOT EXISTS idx_publication_records_candidate_card_id
+ON publication_records(candidate_card_id);
