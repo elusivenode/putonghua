@@ -82,6 +82,19 @@ Import one YouTube source:
 uv run putonghua youtube import "https://www.youtube.com/watch?v=VIDEO_ID" --project-name "Episode Name" --config config.yaml
 ```
 
+Prepare a long episode for resumable, one-minute OpenAI transcription:
+
+```bash
+uv run putonghua youtube prepare "https://www.youtube.com/watch?v=VIDEO_ID" --project-name "Episode Name" --config config.yaml
+uv run putonghua youtube status --source-id SOURCE_ID --config config.yaml
+uv run putonghua youtube transcribe-next --source-id SOURCE_ID --config config.yaml
+```
+
+`prepare` downloads the episode locally and persists one-minute windows without
+calling OpenAI. Each `transcribe-next` call sends only the next pending window,
+persists its transcript and study chunk, and reports the next resume point.
+This makes it safe to stop and continue a long episode in a later session.
+
 Build study chunks from an imported source:
 
 ```bash
@@ -117,6 +130,11 @@ Open the interactive session explicitly:
 ```bash
 uv run putonghua tui --config config.yaml
 ```
+
+The TUI is the recommended review surface. Select a project, source, and chunk
+with `p N`, `s N`, and `c N`; use `n` for the next pending chunk. `h` shows
+the command reference. The up/down arrows recall commands entered during the
+current TUI session.
 
 Start the guided tutorial from inside the TUI:
 

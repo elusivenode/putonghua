@@ -5,8 +5,10 @@ from io import StringIO
 from pathlib import Path
 from typing import cast
 
+from pytest import MonkeyPatch
 from rich.console import Console
 
+import putonghua.cli.tui as tui
 from putonghua.cli.tui import run_tui_session
 from putonghua.database.connection import connect
 from putonghua.database.migrations import migrate_database
@@ -582,7 +584,9 @@ def test_tui_session_service_completes_chunk(tmp_path: Path) -> None:
     assert completed.status == "completed"
 
 
-def test_run_tui_session_supports_help_navigation_and_quit() -> None:
+def test_run_tui_session_supports_help_navigation_and_quit(
+    monkeypatch: MonkeyPatch,
+) -> None:
     class _FakeService:
         def get_dashboard(
             self,
@@ -645,6 +649,8 @@ def test_run_tui_session_supports_help_navigation_and_quit() -> None:
             )
 
     commands = iter(["help", "c 2", "n", "quit"])
+    remembered: list[str] = []
+    monkeypatch.setattr(tui, "_remember_command", remembered.append)
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None)
 
@@ -658,6 +664,7 @@ def test_run_tui_session_supports_help_navigation_and_quit() -> None:
     assert "Putonghua TUI session" in rendered
     assert "Selected chunk 2." in rendered
     assert "Leaving putonghua TUI." in rendered
+    assert remembered == ["help", "c 2", "n", "quit"]
 
 
 def test_run_tui_session_supports_complete_and_advances() -> None:
@@ -1736,8 +1743,7 @@ def test_run_tui_session_supports_tutorial_entry_status_and_reset() -> None:
     assert "Tutorial state reset." in rendered
     assert "Type `tutorial` to start again from step 1." in rendered
     assert "No active tutorial session." in rendered
-    assert "Status: inactive" in rendered
-    assert "Command: tutorial" in rendered
+    assert "Status: inactive" not in rendered
 
 
 def test_run_tui_session_renders_tutorial_panel_once_on_start() -> None:
@@ -1817,7 +1823,7 @@ def test_run_tui_session_renders_tutorial_panel_once_on_start() -> None:
     assert rendered.count("Goal: Understand the session layout") == 1
 
 
-def test_run_tui_session_renders_inactive_tutorial_guidance() -> None:
+def test_run_tui_session_hides_inactive_tutorial_guidance() -> None:
     class _FakeService:
         def get_dashboard(
             self,
@@ -1852,6 +1858,6 @@ def test_run_tui_session_renders_inactive_tutorial_guidance() -> None:
     )
 
     rendered = output.getvalue()
-    assert "Status: inactive" in rendered
-    assert "Command: tutorial" in rendered
-    assert "tutorial resume" in rendered
+    assert "Status: inactive" not in rendered
+    assert "Command: tutorial" not in rendered
+    assert "tutorial resume" not in rendered

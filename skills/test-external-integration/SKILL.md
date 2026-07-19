@@ -17,6 +17,8 @@ Run a live integration honestly and safely.
 3. Use the narrowest live command that proves the behavior.
 4. Record exact identifiers, outputs, and local side effects.
 5. Distinguish live success from code-path support without live verification.
+6. For a resumable UAT flow, inspect persisted progress after every live step
+   and record the next operator action before ending the session.
 
 ## Validation Expectations
 
