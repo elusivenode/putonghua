@@ -23,6 +23,7 @@ from putonghua.models.candidates import (
 )
 from putonghua.models.chunks import StudyChunkView
 from putonghua.models.review import ReviewSuggestionView
+from putonghua.models.transcription import TranscriptionProgress
 from putonghua.models.tui import TuiPublishTargetView
 from putonghua.providers.anki_connect import AnkiConnectConfig, AnkiConnectProvider
 from putonghua.providers.openai_candidate_extraction import (
@@ -49,6 +50,7 @@ from putonghua.services.study_chunks import (
     StudyChunkBuildConfig,
     StudyChunkService,
 )
+from putonghua.services.transcription_queue import TranscriptionQueueService
 from putonghua.services.tui_session import TuiSessionService
 from putonghua.services.tutorial import TutorialService
 from putonghua.services.youtube_import import (
@@ -339,6 +341,70 @@ def youtube_import(
         console.print(f"Channel: {result.channel_name}")
     console.print(f"Audio: {result.media_path}")
     console.print(f"Transcript source: {result.transcript_source}")
+
+
+@youtube_app.command("prepare")
+def youtube_prepare(
+    url: str = typer.Argument(..., help="YouTube episode URL to prepare."),
+    project_name: str = typer.Option(
+        ..., "--project-name", help="Project name to create or reuse."
+    ),
+    config_path: ConfigOption = DEFAULT_CONFIG_PATH,
+) -> None:
+    """Download an episode and persist 60-second transcription windows."""
+    settings = load_settings(config_path)
+    if not settings.openai.api_key:
+        console.print(
+            "YouTube prepare requires OPENAI_API_KEY for later transcription."
+        )
+        raise typer.Exit(code=1)
+    service = _build_transcription_queue_service(config_path)
+    try:
+        result = service.prepare(project_name=project_name, url=url)
+    except Exception as exc:
+        console.print(f"YouTube prepare failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Prepared source {result.source_id}")
+    console.print(f"Duration: {result.duration_seconds:.1f}s")
+    console.print(f"One-minute windows: {result.total_windows}")
+
+
+@youtube_app.command("status")
+def youtube_status(
+    source_id: str = typer.Option(
+        ..., "--source-id", help="Prepared source identifier."
+    ),
+    config_path: ConfigOption = DEFAULT_CONFIG_PATH,
+) -> None:
+    """Show resumable transcription progress for one source."""
+    service = _build_transcription_queue_service(config_path)
+    progress = service.status(source_id)
+    _render_transcription_progress(progress)
+
+
+@youtube_app.command("transcribe-next")
+def youtube_transcribe_next(
+    source_id: str = typer.Option(
+        ..., "--source-id", help="Prepared source identifier."
+    ),
+    config_path: ConfigOption = DEFAULT_CONFIG_PATH,
+) -> None:
+    """Transcribe and persist exactly the next pending one-minute window."""
+    service = _build_transcription_queue_service(config_path)
+    try:
+        result = service.transcribe_next(source_id)
+    except Exception as exc:
+        console.print(f"Transcription failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    if result is None:
+        console.print(f"No pending transcription windows for source {source_id}")
+        return
+    console.print(
+        f"Transcribed window {result.window_index + 1}: "  # noqa: E501
+        f"{result.start_seconds:.0f}s–{result.end_seconds:.0f}s"
+    )
+    console.print(f"Study chunk: {result.study_chunk_id}")
+    _render_transcription_progress(result.progress)
 
 
 @chunk_app.command("build")
@@ -744,6 +810,46 @@ def _build_chunk_review_service(config_path: Path) -> ChunkReviewService:
         provider_name="openai",
         model_name=settings.openai.review_model,
     )
+
+
+def _build_transcription_queue_service(config_path: Path) -> TranscriptionQueueService:
+    """Build the fixed one-minute transcription queue from config."""
+    settings = load_settings(config_path)
+    if not settings.openai.api_key:
+        raise ValueError("Transcription requires OPENAI_API_KEY or openai.api_key.")
+    return TranscriptionQueueService(
+        database_path=settings.app.database_path,
+        data_dir=settings.app.data_dir,
+        downloader=YtDlpDownloader(),
+        transcriber=OpenAITranscriptionProvider(
+            OpenAITranscriptionConfig(
+                api_key=settings.openai.api_key,
+                model=settings.openai.transcription_model,
+                language=settings.openai.transcription_language,
+                prompt=settings.openai.transcription_prompt,
+                timeout_seconds=settings.openai.timeout_seconds,
+                max_upload_bytes=settings.openai.max_upload_bytes,
+                transcription_bitrate_kbps=settings.openai.transcription_bitrate_kbps,
+                chunk_duration_seconds=60,
+            )
+        ),
+        model=settings.openai.transcription_model,
+        prompt=settings.openai.transcription_prompt,
+    )
+
+
+def _render_transcription_progress(progress: TranscriptionProgress) -> None:
+    """Render progress without coupling CLI commands to repository details."""
+    total = progress.total_windows
+    completed = progress.completed_windows
+    failed = progress.failed_windows
+    next_start = progress.next_start_seconds
+    next_end = progress.next_end_seconds
+    console.print(f"Transcription: {completed}/{total} complete; {failed} failed")
+    if next_start is None:
+        console.print("Next window: none")
+    else:
+        console.print(f"Next window: {next_start:.0f}s–{next_end:.0f}s")
 
 
 def _build_tui_session_service(config_path: Path) -> TuiSessionService:

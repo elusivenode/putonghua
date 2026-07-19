@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import readline
 from collections.abc import Callable
 from dataclasses import dataclass
 from textwrap import wrap
@@ -57,7 +58,7 @@ def run_tui_session(
 
     state = TuiSessionState()
     console.print("Putonghua TUI session")
-    console.print(HELP_TEXT)
+    console.print("Type `help` for commands. Select a project, source, and chunk.")
 
     while True:
         dashboard = service.get_dashboard(
@@ -74,6 +75,7 @@ def run_tui_session(
         raw_command = input_func("putonghua> ").strip()
         if not raw_command:
             continue
+        _remember_command(raw_command)
         should_exit = _handle_command(
             raw_command=raw_command,
             dashboard=dashboard,
@@ -84,6 +86,12 @@ def run_tui_session(
         )
         if should_exit:
             return
+
+
+def _remember_command(command: str) -> None:
+    """Add one entered TUI command to the current terminal history."""
+
+    readline.add_history(command)
 
 
 def _handle_command(
@@ -606,36 +614,19 @@ def _render_dashboard(console: Console, dashboard: TuiDashboardView) -> None:
     """Render the interactive session dashboard."""
 
     console.print()
-    console.print(Panel.fit(HELP_TEXT, title="Help"))
-    console.print(_render_tutorial_panel(dashboard.tutorial))
     console.print(_render_projects_table(dashboard))
     console.print(_render_sources_table(dashboard))
     console.print(_render_chunks_table(dashboard))
     console.print(_render_focus_panel(dashboard))
+    if dashboard.tutorial is not None:
+        console.print(_render_tutorial_panel(dashboard.tutorial))
 
 
 def _render_tutorial_panel(tutorial: TutorialSessionView | None) -> Panel:
     """Render the current tutorial checklist or idle guidance."""
 
     if tutorial is None:
-        lines = [
-            "Status: inactive",
-            "Step: not started",
-            "Command: tutorial",
-            "Goal: Start the guided walkthrough",
-            "",
-            "Do this:",
-            "1. Type `tutorial` to start a fresh walkthrough from step 1.",
-            "2. Type `tutorial resume` only if you want to continue an earlier run.",
-            "3. Follow the Tutorial panel one command at a time after it starts.",
-            "",
-            "Choice: Use `tutorial` for a clean restart. "
-            "Use `tutorial resume` only when you intentionally want previous progress.",
-            "Why: The tutorial is meant to teach the workflow in order, "
-            "so it needs an explicit entry point.",
-            "State: no active tutorial session",
-        ]
-        return Panel("\n".join(lines), title="Tutorial")
+        raise ValueError("A tutorial panel requires an active tutorial session.")
 
     current_step = _resolve_current_tutorial_step(tutorial)
     current_step_title = (

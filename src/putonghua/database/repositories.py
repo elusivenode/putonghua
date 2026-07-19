@@ -124,6 +124,22 @@ class SourceContextRow:
 
 
 @dataclass(frozen=True)
+class SourceDetailsRow:
+    id: str
+    media_path: str | None
+
+
+@dataclass(frozen=True)
+class TranscriptionWindowRow:
+    id: str
+    source_id: str
+    window_index: int
+    start_seconds: float
+    end_seconds: float
+    status: str
+
+
+@dataclass(frozen=True)
 class SourceListRow:
     """Persisted source row with dashboard counts."""
 
@@ -450,6 +466,52 @@ class SourceRepository:
             title=str(row["title"]),
         )
 
+    def get_source_details(self, source_id: str) -> SourceDetailsRow | None:
+        row = self._connection.execute(
+            "SELECT id, media_path FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return SourceDetailsRow(
+            id=str(row["id"]),
+            media_path=(
+                str(row["media_path"]) if row["media_path"] is not None else None
+            ),
+        )
+
+    def replace_transcript_segments_for_window(
+        self, source_id: str, window_index: int, segments: list[TranscriptSegmentRecord]
+    ) -> None:
+        lower = window_index * 10_000
+        self._connection.execute(
+            "DELETE FROM transcript_segments WHERE source_id = ? "
+            "AND segment_index >= ? AND segment_index < ?",
+            (source_id, lower, lower + 10_000),
+        )
+        for segment in segments:
+            self._connection.execute(
+                "INSERT INTO transcript_segments("
+                "id, source_id, start_seconds, end_seconds, text, segment_index"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid4()),
+                    source_id,
+                    segment.start_seconds,
+                    segment.end_seconds,
+                    segment.text,
+                    segment.segment_index,
+                ),
+            )
+
+    def refresh_transcript_text(self, source_id: str) -> None:
+        self._connection.execute(
+            "UPDATE sources SET transcript_text = COALESCE(("
+            "SELECT group_concat(text, char(10)) FROM (SELECT text "
+            "FROM transcript_segments WHERE source_id = ? ORDER BY segment_index)"
+            "), '') WHERE id = ?",
+            (source_id, source_id),
+        )
+
     def list_sources_for_project(self, project_id: str) -> list[SourceListRow]:
         """Return sources for one project with workflow counts."""
 
@@ -505,6 +567,90 @@ class SourceRepository:
         ]
 
 
+class TranscriptionWindowRepository:
+    """Persistence for fixed-duration, resumable transcription windows."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def create_for_source(
+        self, source_id: str, duration: float, window_seconds: int
+    ) -> None:
+        index = 0
+        start = 0.0
+        while start < duration:
+            end = min(start + window_seconds, duration)
+            self._connection.execute(
+                "INSERT OR IGNORE INTO transcription_windows("
+                "id, source_id, window_index, start_seconds, end_seconds"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (str(uuid4()), source_id, index, start, end),
+            )
+            index += 1
+            start = end
+
+    def count_for_source(self, source_id: str) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS count FROM transcription_windows WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        return int(row["count"])
+
+    def next_pending(self, source_id: str) -> TranscriptionWindowRow | None:
+        row = self._connection.execute(
+            "SELECT id, source_id, window_index, start_seconds, end_seconds, status "
+            "FROM transcription_windows WHERE source_id = ? "
+            "AND status IN ('pending', 'failed') ORDER BY window_index LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        return _row_to_transcription_window(row)
+
+    def mark_in_progress(self, window_id: str) -> None:
+        self._connection.execute(
+            "UPDATE transcription_windows SET status = 'in_progress', "
+            "attempt_count = attempt_count + 1, last_error = NULL, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (window_id,),
+        )
+
+    def mark_failed(self, window_id: str, error: str) -> None:
+        self._connection.execute(
+            "UPDATE transcription_windows SET status = 'failed', last_error = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (error, window_id),
+        )
+
+    def mark_completed(
+        self, window_id: str, text: str, model: str, prompt: str | None
+    ) -> None:
+        self._connection.execute(
+            "UPDATE transcription_windows SET status = 'completed', "
+            "transcript_text = ?, model = ?, prompt = ?, "
+            "completed_at = CURRENT_TIMESTAMP, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (text, model, prompt, window_id),
+        )
+
+    def progress(self, source_id: str):
+        from putonghua.models.transcription import TranscriptionProgress
+
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS total, SUM(status = 'completed') AS completed, "
+            "SUM(status = 'failed') AS failed FROM transcription_windows "
+            "WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        next_window = self.next_pending(source_id)
+        return TranscriptionProgress(
+            source_id=source_id,
+            total_windows=int(row["total"]),
+            completed_windows=int(row["completed"] or 0),
+            failed_windows=int(row["failed"] or 0),
+            next_start_seconds=next_window.start_seconds if next_window else None,
+            next_end_seconds=next_window.end_seconds if next_window else None,
+        )
+
+
 class StudyChunkRepository:
     """Study chunk persistence helpers."""
 
@@ -558,6 +704,50 @@ class StudyChunkRepository:
                 ),
             )
         return chunk_ids
+
+    def upsert(self, chunk: StudyChunkRecord) -> str:
+        row = self._connection.execute(
+            "SELECT id, status FROM study_chunks "
+            "WHERE source_id = ? AND chunk_index = ?",
+            (chunk.source_id, chunk.chunk_index),
+        ).fetchone()
+        if row is not None:
+            if str(row["status"]) != "pending":
+                return str(row["id"])
+            self._connection.execute(
+                "UPDATE study_chunks SET start_seconds = ?, end_seconds = ?, text = ?, "
+                "transcript_segment_count = ?, char_count = ? WHERE id = ?",
+                (
+                    chunk.start_seconds,
+                    chunk.end_seconds,
+                    chunk.text,
+                    chunk.transcript_segment_count,
+                    chunk.char_count,
+                    str(row["id"]),
+                ),
+            )
+            return str(row["id"])
+        chunk_id = str(uuid4())
+        self._connection.execute(
+            "INSERT INTO study_chunks("
+            "id, source_id, chunk_index, start_seconds, end_seconds, text, "
+            "transcript_segment_count, char_count, status, last_reviewed_at, notes"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                chunk_id,
+                chunk.source_id,
+                chunk.chunk_index,
+                chunk.start_seconds,
+                chunk.end_seconds,
+                chunk.text,
+                chunk.transcript_segment_count,
+                chunk.char_count,
+                chunk.status,
+                chunk.last_reviewed_at,
+                chunk.notes,
+            ),
+        )
+        return chunk_id
 
     def get_next_pending_chunk(self, source_id: str) -> StudyChunkRow | None:
         """Return the next pending chunk for a source."""
@@ -739,7 +929,7 @@ class CandidateRepository:
                 provenance_json
             FROM candidate_cards
             WHERE study_chunk_id = ?
-            ORDER BY created_at ASC, id ASC
+            ORDER BY created_at ASC, rowid ASC
             """,
             (chunk_id,),
         ).fetchall()
@@ -1438,6 +1628,21 @@ def _row_to_study_chunk(row: sqlite3.Row | None) -> StudyChunkRow | None:
             else None
         ),
         notes=str(row["notes"]) if row["notes"] is not None else None,
+    )
+
+
+def _row_to_transcription_window(
+    row: sqlite3.Row | None,
+) -> TranscriptionWindowRow | None:
+    if row is None:
+        return None
+    return TranscriptionWindowRow(
+        id=str(row["id"]),
+        source_id=str(row["source_id"]),
+        window_index=int(row["window_index"]),
+        start_seconds=float(row["start_seconds"]),
+        end_seconds=float(row["end_seconds"]),
+        status=str(row["status"]),
     )
 
 

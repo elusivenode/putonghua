@@ -8,19 +8,30 @@ than appending a long log.
 
 ## Current Objective
 
-The `feature/tutorial` branch should add the first guided tutorial / UAT flow
-inside the interactive session so a learner can practice the real workflow and
-finish with one card persisted to Anki.
+On `uat/20270719`, validate a resumable 60-second podcast workflow and tune
+candidate generation from real learner-reviewed chunks.
 
 ## Repository State
 
-- Branch: `feature/tutorial`
-- Baseline commit: `ee51c4f`
-- Worktree note: dirty with Phase 1 persistence plus Phase 2/3 tutorial
-  bootstrap, Phase 4 completion detection polish, Phase 5 docs/UAT guidance,
-  and updated tests
+- Branch: `uat/20270719`
+- Baseline commit: `3ff72d1` (`feature/tutorial` merged into `main`)
+- Worktree note: dirty with resumable transcription-window implementation
 
 ## Recently Completed
+
+- added `011_transcription_windows` and scripted `youtube prepare`,
+  `youtube status`, and `youtube transcribe-next` commands; each API request
+  transcribes exactly one persisted 60-second window and creates its matching
+  study chunk
+- prepared `https://youtu.be/lR5Rt6293bg` as source
+  `ae03c400-a694-4ff3-ae20-de0f0fd04f20` (43:56, 44 windows)
+- live-transcribed windows 1 and 2 (00:00-02:00); resume point is 02:00-03:00
+- live-extracted four proposed phrase candidates for chunk
+  `67880476-881c-4691-ab7e-f1c2d07d6a5c`; two were learner-promoted and
+  published to Anki with local records and note IDs `1784421847690` and
+  `1784422076483`
+- removed the original local 45-second setup clip and its project; its historic
+  remote Anki note was not deleted and now has no local publication record
 
 - merged the `feature/cli_ui` rollout into `main`
 - pushed `main` to `origin`
@@ -72,6 +83,14 @@ the completed sprint record.
 
 ## Validation Status
 
+- `UV_CACHE_DIR=.uv-cache uv run ruff format --check .` passed
+- `UV_CACHE_DIR=.uv-cache uv run ruff check .` passed
+- `UV_CACHE_DIR=.uv-cache uv run pyright` passed
+- `UV_CACHE_DIR=.uv-cache uv run pytest` passed with `76 passed`
+- live OpenAI transcription succeeded for two 60-second windows
+- live OpenAI candidate extraction succeeded for the first window
+- live TUI promotion and Anki publication succeeded for two first-window cards
+
 - tutorial Phase 1 through Phase 5 implementation validated in this session:
 - `UV_CACHE_DIR=.uv-cache uv run ruff format --check .` passed
 - `UV_CACHE_DIR=.uv-cache uv run ruff check .` passed
@@ -95,7 +114,8 @@ the completed sprint record.
 
 ## Recommended Next Action
 
-Run the live tutorial walkthrough in
-[tutorial-uat-checklist.md](tutorial-uat-checklist.md), including a fresh
-publish to Anki, and record any gaps before considering the onboarding slice
-done end to end.
+Continue the full podcast from the persisted 02:00-03:00 window with
+`youtube transcribe-next --source-id ae03c400-a694-4ff3-ae20-de0f0fd04f20`.
+Use the TUI to review each new chunk before promotion. Tune the extraction
+prompt to reject syntactically incomplete phrases such as `欢迎大家来到` before
+processing the episode in bulk.
